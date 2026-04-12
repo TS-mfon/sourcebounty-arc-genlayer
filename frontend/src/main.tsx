@@ -11,7 +11,7 @@ declare global {
   }
 }
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8896";
+const API_URL = import.meta.env.VITE_API_URL || "https://sourcebounty-relay.onrender.com";
 const ARC_CHAIN_ID = 5042002;
 
 type Health = { arcEscrowContract: string; genlayerJudgeContract: string; genlayerNetwork: string };

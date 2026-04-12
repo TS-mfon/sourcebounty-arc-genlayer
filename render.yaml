@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: sourcebounty-relay
+    runtime: python
+    plan: free
+    buildCommand: pip install -r relay/requirements.txt
+    startCommand: python3 relay/sourcebounty_service.py
+    envVars:
+      - key: ARC_RPC_URL
+        value: https://rpc.testnet.arc.network
+      - key: ARC_CHAIN_ID
+        value: "5042002"
+      - key: ARC_ESCROW_CONTRACT
+        value: 0x4a38251e67229438235B0999cEb086Cb2987b55C
+      - key: GENLAYER_NETWORK
+        value: studionet
+      - key: GENLAYER_JUDGE_CONTRACT
+        value: 0xD98cCe08987CDb6Ca6A217FA1BD767c2EF5436aa
+      - key: SOURCEBOUNTY_DB_PATH
+        value: /tmp/sourcebounty.db

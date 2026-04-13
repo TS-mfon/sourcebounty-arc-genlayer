@@ -5,6 +5,7 @@ import sqlite3
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 DB_PATH = os.environ.get("SOURCEBOUNTY_DB_PATH", "sourcebounty.db")
 PORT = int(os.environ.get("PORT", "8896"))
@@ -13,6 +14,7 @@ GENLAYER_JUDGE_CONTRACT = os.environ.get("GENLAYER_JUDGE_CONTRACT", "0xD98cCe089
 ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
+BLOCKED_CITATION_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
 
 
 def digest(value):
@@ -30,10 +32,14 @@ def init_db():
                 reward TEXT NOT NULL,
                 deadline INTEGER NOT NULL,
                 status TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                onchain_bounty_id TEXT DEFAULT '',
+                funding_tx_hash TEXT DEFAULT ''
             )
             """
         )
+        add_column(db, "bounties", "onchain_bounty_id", "TEXT DEFAULT ''")
+        add_column(db, "bounties", "funding_tx_hash", "TEXT DEFAULT ''")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS answers (
@@ -49,6 +55,36 @@ def init_db():
             )
             """
         )
+
+
+def add_column(db, table, column, definition):
+    columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in columns:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def validate_optional_urls(urls):
+    if not urls:
+        return []
+    problems = []
+    for raw_url in urls:
+        url = str(raw_url).strip()
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or not hostname:
+            problems.append({"url": url, "reason": "Use a full http(s) URL."})
+            continue
+        if hostname in BLOCKED_CITATION_HOSTS or hostname.endswith(tuple(f".{host}" for host in BLOCKED_CITATION_HOSTS)):
+            problems.append({"url": url, "reason": "GenLayer may not be able to access gated/social links. Add a public mirror or raw citation link."})
+            continue
+        try:
+            request = Request(url, method="HEAD", headers={"User-Agent": "SourceBounty-Link-Check/1.0"})
+            with urlopen(request, timeout=6) as response:
+                if response.status >= 400:
+                    problems.append({"url": url, "reason": f"URL returned HTTP {response.status}."})
+        except Exception as exc:
+            problems.append({"url": url, "reason": f"GenLayer cannot access this link from the relay: {exc}"})
+    return problems
 
 
 def json_response(handler, status, payload):
@@ -102,6 +138,8 @@ class Handler(BaseHTTPRequestHandler):
                     "deadline": row[4],
                     "status": row[5],
                     "createdAt": row[6],
+                    "onchainBountyId": row[7] if len(row) > 7 else "",
+                    "fundingTxHash": row[8] if len(row) > 8 else "",
                 }
                 for row in rows
             ]
@@ -120,10 +158,21 @@ class Handler(BaseHTTPRequestHandler):
                 json_response(self, 400, {"error": f"Missing fields: {', '.join(missing)}"})
                 return
             bounty_id = "bounty_" + digest({**payload, "createdAt": now})[:16]
+            status = "funded" if payload.get("fundingTxHash") else "created"
             with sqlite3.connect(DB_PATH) as db:
                 db.execute(
-                    "INSERT INTO bounties VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (bounty_id, payload["creator"], payload["question"], str(payload["reward"]), int(payload["deadline"]), "created", now),
+                    "INSERT INTO bounties VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        bounty_id,
+                        payload["creator"],
+                        payload["question"],
+                        str(payload["reward"]),
+                        int(payload["deadline"]),
+                        status,
+                        now,
+                        str(payload.get("onchainBountyId", "")),
+                        str(payload.get("fundingTxHash", "")),
+                    ),
                 )
             json_response(self, 201, {"bountyId": bounty_id, "questionHash": digest(payload["question"])})
             return
@@ -135,10 +184,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             answer_id = "ans_" + digest({**payload, "createdAt": now})[:16]
             citations = payload.get("citationUrls", [])
+            url_problems = validate_optional_urls(citations)
+            if url_problems:
+                json_response(self, 400, {"error": "One or more citation links cannot be accessed by GenLayer.", "urlProblems": url_problems})
+                return
             verdict = {
-                "accepted": bool(citations),
-                "summary": "Relay preview only. Final judgement should be written through GenLayer Studionet.",
-                "reasonCodes": ["PASS_MINIMUM_ACCEPTANCE"] if citations else ["MISSING_CITATIONS"],
+                "accepted": True,
+                "summary": "Relay preview accepted the answer shape. Final judgement should be written through GenLayer Studionet before reward/refund.",
+                "reasonCodes": ["PASS_MINIMUM_ACCEPTANCE"] if citations else ["NO_OPTIONAL_CITATIONS_PROVIDED"],
                 "verdictDigest": digest(payload),
             }
             with sqlite3.connect(DB_PATH) as db:

@@ -16,6 +16,10 @@ Arc RPC: `https://rpc.testnet.arc.network`
 
 GenLayer RPC: `https://studio.genlayer.com/api`
 
+Relay backend: `https://sourcebounty-relay.onrender.com`
+
+Frontend: `https://sourcebounty-arc-genlayer.vercel.app`
+
 ## How It Works
 
 1. Creator enters a research question, reward amount, and deadline.
@@ -54,5 +58,5 @@ genvm-lint check ../genlayer/contracts/sourcebounty_judge.py
 Deploy from `frontend/` and set:
 
 ```bash
-VITE_API_URL=<your-render-sourcebounty-relay-url>
+VITE_API_URL=https://sourcebounty-relay.onrender.com
 ```

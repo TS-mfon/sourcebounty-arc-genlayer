@@ -17,3 +17,8 @@
 - Transaction hash: `0x1b093130da8bf6acb55112fdc51b9f966302bad383dfcced494d3171cd0f71b2`
 - Rubric version: `v1`
 - Verification: `genlayer call 0xD98cCe08987CDb6Ca6A217FA1BD767c2EF5436aa get_rubric_version` returned `v1`
+
+## Hosted Apps
+
+- Relay backend: `https://sourcebounty-relay.onrender.com`
+- Frontend: `https://sourcebounty-arc-genlayer.vercel.app`

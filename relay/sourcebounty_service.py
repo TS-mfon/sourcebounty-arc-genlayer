@@ -21,7 +21,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_CITATION_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "sourcebounty-ui-v4"
+RELAY_VERSION = "sourcebounty-ui-v5"
 GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
 GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
 RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
@@ -281,6 +281,25 @@ class Handler(BaseHTTPRequestHandler):
                 for row in rows
             ]
             json_response(self, 200, {"bounties": bounties})
+            return
+        if path == "/answers":
+            with sqlite3.connect(DB_PATH) as db:
+                rows = db.execute("SELECT * FROM answers ORDER BY created_at DESC").fetchall()
+            answers = [
+                {
+                    "id": row[0],
+                    "bountyId": row[1],
+                    "responder": row[2],
+                    "answer": row[3],
+                    "answerUrl": row[4],
+                    "citationUrls": json.loads(row[5]),
+                    "accepted": row[6],
+                    "verdict": json.loads(row[7]) if row[7] else None,
+                    "createdAt": row[8],
+                }
+                for row in rows
+            ]
+            json_response(self, 200, {"answers": answers})
             return
         json_response(self, 404, {"error": "not_found"})
 

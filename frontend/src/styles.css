@@ -24,6 +24,29 @@ main {
 h1 { font-size: clamp(44px, 8vw, 92px); margin: 0 0 12px; letter-spacing: -0.08em; }
 h2 { margin-top: 0; }
 .eyebrow { font-weight: 900; text-transform: uppercase; }
+.icon-row { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+.icon {
+  display: inline-grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border: 2px solid #181617;
+  border-radius: 50%;
+  background: #27d3a2;
+  box-shadow: 5px 5px 0 #181617;
+  font-weight: 950;
+}
+.mini-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-right: 10px;
+  border: 2px solid #181617;
+  border-radius: 50%;
+  background: #fdd959;
+  font-size: 14px;
+}
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
 label { display: block; font-weight: 850; margin: 16px 0; }
 label span { display: block; font-weight: 500; color: #625c50; margin: 4px 0; }

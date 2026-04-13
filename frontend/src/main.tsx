@@ -13,6 +13,9 @@ declare global {
 
 const API_URL = import.meta.env.VITE_API_URL || "https://sourcebounty-relay.onrender.com";
 const ARC_CHAIN_ID = 5042002;
+const ARC_ESCROW_CONTRACT = "0x4a38251e67229438235B0999cEb086Cb2987b55C";
+const GENLAYER_JUDGE_CONTRACT = "0xD98cCe08987CDb6Ca6A217FA1BD767c2EF5436aa";
+const GENLAYER_NETWORK = "studionet";
 
 type Health = { arcEscrowContract: string; genlayerJudgeContract: string; genlayerNetwork: string };
 type Bounty = { id: string; creator: string; question: string; reward: string; deadline: number; status: string };
@@ -42,11 +45,20 @@ function App() {
   async function refresh() {
     try {
       const [healthRes, bountiesRes] = await Promise.all([fetch(`${API_URL}/health`), fetch(`${API_URL}/bounties`)]);
+      if (!healthRes.ok || !bountiesRes.ok) {
+        throw new Error("Backend returned an unavailable response.");
+      }
       setHealth(await healthRes.json());
       const data = await bountiesRes.json();
       setBounties(data.bounties || []);
+      setMessage("Backend connected. Network configuration loaded.");
     } catch (error) {
-      setMessage(`Backend unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+      setHealth({
+        arcEscrowContract: ARC_ESCROW_CONTRACT,
+        genlayerJudgeContract: GENLAYER_JUDGE_CONTRACT,
+        genlayerNetwork: GENLAYER_NETWORK,
+      });
+      setMessage(`Backend is starting or temporarily unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
 
@@ -106,6 +118,7 @@ function App() {
   return (
     <main>
       <section className="hero">
+        <div className="icon-row"><span className="icon">SB</span><span className="icon">ARC</span><span className="icon">GL</span></div>
         <p className="eyebrow">Arc + GenLayer</p>
         <h1>SourceBounty</h1>
         <p>Post funded research questions on Arc and use GenLayer Studionet to check whether answers are cited and relevant before reward release.</p>
@@ -114,7 +127,7 @@ function App() {
 
       <section className="grid">
         <div className="card">
-          <h2>Create Bounty</h2>
+          <h2><span className="mini-icon">01</span>Create Bounty</h2>
           <label>Question<span>The research question you want solved with cited sources.</span><textarea value={bountyForm.question} onChange={(e) => setBountyForm({ ...bountyForm, question: e.target.value })} /></label>
           <label>Reward<span>Native Arc Testnet USDC amount locked for the accepted answer.</span><input value={bountyForm.reward} onChange={(e) => setBountyForm({ ...bountyForm, reward: e.target.value })} /></label>
           <label>Deadline<span>Unix timestamp after which creator refund becomes available.</span><input value={bountyForm.deadline} onChange={(e) => setBountyForm({ ...bountyForm, deadline: e.target.value })} /></label>
@@ -122,7 +135,7 @@ function App() {
         </div>
 
         <div className="card">
-          <h2>Submit Answer</h2>
+          <h2><span className="mini-icon">02</span>Submit Answer</h2>
           <label>Bounty ID<span>Use the ID returned after bounty creation.</span><input value={answerForm.bountyId} onChange={(e) => setAnswerForm({ ...answerForm, bountyId: e.target.value })} /></label>
           <label>Responder Wallet<span>The address that should receive the reward if accepted.</span><input value={answerForm.responder} onChange={(e) => setAnswerForm({ ...answerForm, responder: e.target.value })} /></label>
           <label>Answer<span>The researched answer GenLayer should evaluate.</span><textarea value={answerForm.answer} onChange={(e) => setAnswerForm({ ...answerForm, answer: e.target.value })} /></label>
@@ -133,15 +146,16 @@ function App() {
       </section>
 
       <section className="card">
-        <h2>Network</h2>
-        <p>Arc bounty contract: {health?.arcEscrowContract || "not configured yet"}</p>
-        <p>GenLayer judge: {health?.genlayerJudgeContract || "not configured yet"} on {health?.genlayerNetwork || "studionet"}</p>
+        <h2><span className="mini-icon">03</span>Network</h2>
+        <p>Arc bounty contract: {health?.arcEscrowContract || ARC_ESCROW_CONTRACT}</p>
+        <p>GenLayer judge: {health?.genlayerJudgeContract || GENLAYER_JUDGE_CONTRACT} on {health?.genlayerNetwork || GENLAYER_NETWORK}</p>
+        <p>Relay API: {API_URL}</p>
         <p>{message}</p>
       </section>
 
       <section className="card">
-        <h2>Bounties</h2>
-        {bounties.map((bounty) => <p key={bounty.id}>{bounty.id} - {bounty.question} - {bounty.status} - {bounty.reward} Arc USDC</p>)}
+        <h2><span className="mini-icon">04</span>Bounties</h2>
+        {bounties.length === 0 ? <p>No bounties created yet.</p> : bounties.map((bounty) => <p key={bounty.id}>{bounty.id} - {bounty.question} - {bounty.status} - {bounty.reward} Arc USDC</p>)}
       </section>
     </main>
   );

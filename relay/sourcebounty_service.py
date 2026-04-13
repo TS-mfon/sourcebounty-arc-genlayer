@@ -5,6 +5,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -20,7 +21,7 @@ ARC_RPC_URL = os.environ.get("ARC_RPC_URL", "https://rpc.testnet.arc.network")
 ARC_CHAIN_ID = int(os.environ.get("ARC_CHAIN_ID", "5042002"))
 GENLAYER_NETWORK = os.environ.get("GENLAYER_NETWORK", "studionet")
 BLOCKED_CITATION_HOSTS = ("x.com", "twitter.com", "instagram.com", "tiktok.com", "facebook.com")
-RELAY_VERSION = "sourcebounty-ui-v3"
+RELAY_VERSION = "sourcebounty-ui-v4"
 GENLAYER_CLI = os.environ.get("GENLAYER_CLI", "genlayer")
 GENLAYER_PASSWORD = os.environ.get("GENLAYER_PASSWORD", "")
 RELAY_PRIVATE_KEY = os.environ.get("RELAY_PRIVATE_KEY", os.environ.get("PRIVATE_KEY", ""))
@@ -204,6 +205,24 @@ def send_arc_tx(function_name, *args):
     return tx_hash.hex()
 
 
+def settle_answer_async(answer_id, bounty_id, onchain_bounty_id, question, answer, answer_url, citations):
+    try:
+        verdict = evaluate_with_genlayer(bounty_id, answer_id, question, answer, answer_url, citations)
+        record_tx_hash = send_arc_tx("recordVerdict", int(onchain_bounty_id), bool(verdict["accepted"]), bytes32_from_digest(verdict["verdictDigest"]))
+        reward_tx_hash = send_arc_tx("releaseReward", int(onchain_bounty_id)) if verdict["accepted"] else ""
+        verdict["recordTxHash"] = record_tx_hash
+        verdict["rewardTxHash"] = reward_tx_hash
+        status = "rewarded" if verdict["accepted"] else "rejected"
+        accepted = 1 if verdict["accepted"] else 0
+    except Exception as exc:
+        verdict = {"accepted": False, "summary": f"GenLayer/Arc settlement failed: {exc}", "reasonCodes": ["SETTLEMENT_FAILED"], "verdictDigest": digest({"answerId": answer_id, "error": str(exc)})}
+        status = "settlement_failed"
+        accepted = 0
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("UPDATE answers SET accepted = ?, verdict = ? WHERE id = ?", (accepted, json.dumps(verdict), answer_id))
+        db.execute("UPDATE bounties SET status = ? WHERE id = ?", (status, bounty_id))
+
+
 def json_response(handler, status, payload):
     body = json.dumps(payload).encode("utf-8")
     handler.send_response(status)
@@ -315,13 +334,12 @@ class Handler(BaseHTTPRequestHandler):
             if not onchain_bounty_id:
                 json_response(self, 400, {"error": "Missing on-chain bounty ID; create and fund the bounty before submitting an answer."})
                 return
-            try:
-                verdict = evaluate_with_genlayer(payload["bountyId"], answer_id, bounty[2], payload["answer"], payload.get("answerUrl", ""), citations)
-                record_tx_hash = send_arc_tx("recordVerdict", int(onchain_bounty_id), bool(verdict["accepted"]), bytes32_from_digest(verdict["verdictDigest"]))
-                reward_tx_hash = send_arc_tx("releaseReward", int(onchain_bounty_id)) if verdict["accepted"] else ""
-            except Exception as exc:
-                json_response(self, 502, {"error": f"GenLayer/Arc settlement failed: {exc}"})
-                return
+            verdict = {
+                "accepted": None,
+                "summary": "GenLayer evaluation started. The relay will record the verdict on Arc and release the reward only if accepted.",
+                "reasonCodes": ["EVALUATION_STARTED"],
+                "verdictDigest": digest({"answerId": answer_id, "status": "started"}),
+            }
             with sqlite3.connect(DB_PATH) as db:
                 db.execute(
                     "INSERT INTO answers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -332,13 +350,18 @@ class Handler(BaseHTTPRequestHandler):
                         payload["answer"],
                         payload.get("answerUrl", ""),
                         json.dumps(citations),
-                        1 if verdict["accepted"] else 0,
+                        None,
                         json.dumps(verdict),
                         now,
                     ),
                 )
-                db.execute("UPDATE bounties SET status = ? WHERE id = ?", ("rewarded" if verdict["accepted"] else "rejected", payload["bountyId"]))
-            json_response(self, 201, {"answerId": answer_id, "verdict": verdict, "recordTxHash": record_tx_hash, "rewardTxHash": reward_tx_hash})
+                db.execute("UPDATE bounties SET status = ? WHERE id = ?", ("evaluating", payload["bountyId"]))
+            threading.Thread(
+                target=settle_answer_async,
+                args=(answer_id, payload["bountyId"], onchain_bounty_id, bounty[2], payload["answer"], payload.get("answerUrl", ""), citations),
+                daemon=True,
+            ).start()
+            json_response(self, 202, {"answerId": answer_id, "verdict": verdict, "settlementStatus": "started"})
             return
         json_response(self, 404, {"error": "not_found"})
 

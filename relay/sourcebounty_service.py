@@ -139,7 +139,7 @@ def extract_json_object(raw):
 
 
 def evaluate_with_genlayer(bounty_id, answer_id, question, answer, answer_url, citations):
-    run_genlayer(
+    write_output = run_genlayer(
         [
             "write",
             GENLAYER_JUDGE_CONTRACT,
@@ -155,8 +155,21 @@ def evaluate_with_genlayer(bounty_id, answer_id, question, answer, answer_url, c
         ],
         timeout=300,
     )
-    verdict_raw = run_genlayer(["call", GENLAYER_JUDGE_CONTRACT, "get_verdict", "--args", bounty_id], timeout=120)
-    return extract_json_object(verdict_raw)
+    tx_hash_match = re.search(r"0x[a-fA-F0-9]{64}", write_output)
+    if tx_hash_match:
+        try:
+            run_genlayer(["receipt", tx_hash_match.group(0), "--status", "FINALIZED", "--retries", "60", "--interval", "3000"], timeout=240)
+        except Exception:
+            pass
+    last_error = None
+    for _ in range(18):
+        try:
+            verdict_raw = run_genlayer(["call", GENLAYER_JUDGE_CONTRACT, "get_verdict", "--args", bounty_id], timeout=120)
+            return extract_json_object(verdict_raw)
+        except Exception as exc:
+            last_error = exc
+            time.sleep(10)
+    raise RuntimeError(f"GenLayer verdict was not available after evaluation: {last_error}")
 
 
 def bytes32_from_digest(value):

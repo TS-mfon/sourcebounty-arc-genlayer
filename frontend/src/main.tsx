@@ -55,6 +55,8 @@ type Role = "provider" | "hunter";
 type Page = "home" | "provider" | "hunter" | "bounties" | "tutorial" | "status";
 type Health = { arcEscrowContract: string; genlayerJudgeContract: string; genlayerNetwork: string; arcChainId?: number };
 type Bounty = { id: string; creator: string; question: string; reward: string; deadline: number; status: string; onchainBountyId?: string; fundingTxHash?: string };
+type Verdict = { accepted: boolean | null; summary?: string; reasonCodes?: string[]; verdictDigest?: string; genlayerTxHash?: string; recordTxHash?: string; rewardTxHash?: string; settlementStatus?: string };
+type Answer = { id: string; bountyId: string; responder: string; answer: string; answerUrl: string; citationUrls: string[]; accepted: number | null; verdict: Verdict | null; createdAt: number; answerTxHash?: string };
 
 const initialBountyForm = { question: "", reward: "", deadline: "" };
 const initialAnswerForm = { bountyId: "", onchainBountyId: "", responder: "", answer: "", answerUrl: "", citationUrls: "" };
@@ -69,6 +71,7 @@ function App() {
   const [wallets, setWallets] = useState<Record<Role, string>>({ provider: "", hunter: "" });
   const [health, setHealth] = useState<Health | null>(null);
   const [bounties, setBounties] = useState<Bounty[]>([]);
+  const [answers, setAnswers] = useState<Answer[]>([]);
   const [message, setMessage] = useState("Connect a role wallet to start.");
   const [busy, setBusy] = useState(false);
   const [bountyForm, setBountyForm] = useState({ question: "Find public evidence that Arc settlement can support low-latency stablecoin payments.", reward: "0.001", deadline: nowPlusDay() });
@@ -81,10 +84,11 @@ function App() {
 
   async function refresh() {
     try {
-      const [healthRes, bountiesRes] = await Promise.all([fetch(`${API_URL}/health`), fetch(`${API_URL}/bounties`)]);
-      if (!healthRes.ok || !bountiesRes.ok) throw new Error("Relay returned an unavailable response.");
+      const [healthRes, bountiesRes, answersRes] = await Promise.all([fetch(`${API_URL}/health`), fetch(`${API_URL}/bounties`), fetch(`${API_URL}/answers`)]);
+      if (!healthRes.ok || !bountiesRes.ok || !answersRes.ok) throw new Error("Relay returned an unavailable response.");
       setHealth(await healthRes.json());
       setBounties((await bountiesRes.json()).bounties || []);
+      setAnswers((await answersRes.json()).answers || []);
       setMessage("Relay online. Arc bounty contract and GenLayer judge are configured.");
     } catch (error) {
       setHealth({ arcEscrowContract: ARC_ESCROW_CONTRACT, genlayerJudgeContract: GENLAYER_JUDGE_CONTRACT, genlayerNetwork: GENLAYER_NETWORK, arcChainId: ARC_CHAIN_ID });
@@ -176,27 +180,30 @@ function App() {
     setBusy(true);
     try {
       await ensureArcNetwork();
+      let answerTxHash = "";
       if (onchainBountyId) {
         const publicClient = createPublicClient({ chain: arcTestnet, transport: http(ARC_RPC_URL) });
         const walletClient = createWalletClient({ chain: arcTestnet, transport: custom(window.ethereum!) });
         setMessage("Submitting the answer hash to the Arc bounty contract...");
-        const txHash = await walletClient.writeContract({
+        answerTxHash = await walletClient.writeContract({
           account: wallets.hunter as `0x${string}`,
           address: ARC_ESCROW_CONTRACT,
           abi: bountyAbi,
           functionName: "submitAnswer",
           args: [BigInt(onchainBountyId), hash32(JSON.stringify(answerForm))],
         });
-        await publicClient.waitForTransactionReceipt({ hash: txHash });
+        await publicClient.waitForTransactionReceipt({ hash: answerTxHash as `0x${string}` });
       }
       const res = await fetch(`${API_URL}/answers`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...answerForm, onchainBountyId, citationUrls: splitUrls(answerForm.citationUrls) }),
+        body: JSON.stringify({ ...answerForm, onchainBountyId, answerTxHash, citationUrls: splitUrls(answerForm.citationUrls) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.urlProblems?.map((item: { url: string; reason: string }) => `${item.url}: ${item.reason}`).join(" | ") || data.error || "Could not submit answer.");
       setMessage(`Answer ${data.answerId}: ${data.verdict.summary}`);
+      setPage("status");
+      await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Submit answer failed.");
     } finally {
@@ -213,9 +220,9 @@ function App() {
       {page === "home" && <Landing setPage={setPage} connectWallet={connectWallet} wallets={wallets} />}
       {page === "provider" && <ProviderPortal form={bountyForm} setForm={setBountyForm} wallet={wallets.provider} connect={() => connectWallet("provider")} submit={createAndFundBounty} busy={busy} />}
       {page === "hunter" && <HunterPortal bounties={bounties} form={answerForm} setForm={setAnswerForm} wallet={wallets.hunter} connect={() => connectWallet("hunter")} submit={submitAnswer} busy={busy} />}
-      {page === "bounties" && <FindBounties bounties={bounties} setPage={setPage} setAnswerForm={setAnswerForm} />}
+      {page === "bounties" && <FindBounties bounties={bounties} answers={answers} setPage={setPage} setAnswerForm={setAnswerForm} />}
       {page === "tutorial" && <Tutorial />}
-      {page === "status" && <Status health={health} message={message} refresh={refresh} />}
+      {page === "status" && <Status health={health} message={message} refresh={refresh} bounties={bounties} answers={answers} />}
       <aside className="toast">{message}</aside>
     </main>
   );
@@ -233,16 +240,34 @@ function HunterPortal({ bounties, form, setForm, wallet, connect, submit, busy }
   return <section className="panel page-rise"><div className="section-head"><p className="eyebrow">Bounty hunter portal</p><h2>Submit a cited answer</h2><p>Citation links are optional. If you add them, they must be public; gated X, Instagram, and similar links will be rejected with a clear message.</p></div><div className="form-grid"><label>Bounty ID<span>Select a relay bounty or paste the bounty ID.</span><select value={form.bountyId} onChange={(e) => { const bounty = bounties.find((item) => item.id === e.target.value); setForm({ ...form, bountyId: e.target.value, onchainBountyId: bounty?.onchainBountyId || "" }); }}><option value="">Choose a bounty</option>{bounties.map((bounty) => <option key={bounty.id} value={bounty.id}>{bounty.question.slice(0, 72)} - {bounty.id}</option>)}</select></label><label>On-chain bounty ID<span>Auto-filled for funded bounties; required for Arc contract submission.</span><input value={form.onchainBountyId} onChange={(e) => setForm({ ...form, onchainBountyId: e.target.value })} /></label><label>Responder wallet<span>The address that should receive reward after acceptance.</span><input value={form.responder} onChange={(e) => setForm({ ...form, responder: e.target.value })} placeholder="0x..." /></label><label>Answer URL<span>Optional public link to a longer answer.</span><input value={form.answerUrl} onChange={(e) => setForm({ ...form, answerUrl: e.target.value })} placeholder="https://..." /></label><label className="wide">Answer<span>Write the researched answer and reasoning.</span><textarea value={form.answer} onChange={(e) => setForm({ ...form, answer: e.target.value })} /></label><label className="wide">Citation URLs<span>Optional comma-separated public links. Avoid gated social URLs.</span><input value={form.citationUrls} onChange={(e) => setForm({ ...form, citationUrls: e.target.value })} placeholder="https://example.com/source" /></label></div><div className="actions"><button className="secondary" onClick={connect}>{wallet ? `Hunter ${short(wallet)}` : "Connect hunter wallet"}</button><button className="primary" disabled={busy} onClick={submit}>{busy ? "Submitting..." : "Submit answer"}</button></div></section>;
 }
 
-function FindBounties({ bounties, setPage, setAnswerForm }: { bounties: Bounty[]; setPage: (page: Page) => void; setAnswerForm: React.Dispatch<React.SetStateAction<typeof initialAnswerForm>> }) {
-  return <section className="panel page-rise"><div className="section-head"><p className="eyebrow">Bounty board</p><h2>Find open bounties</h2><p>Browse research tasks created through the relay and backed by Arc escrow funding transactions.</p></div><div className="cards">{bounties.length === 0 ? <p className="empty">No bounties listed yet.</p> : bounties.map((bounty) => <article className="job-card" key={bounty.id}><div><span className="pill">{bounty.status}</span><span className="pill">On-chain #{bounty.onchainBountyId || "pending"}</span></div><h3>{bounty.question}</h3><dl><div><dt>Reward</dt><dd>{bounty.reward}</dd></div><div><dt>Provider</dt><dd>{short(bounty.creator)}</dd></div></dl><button className="primary" onClick={() => { setAnswerForm((form) => ({ ...form, bountyId: bounty.id, onchainBountyId: bounty.onchainBountyId || "" })); setPage("hunter"); }}>Submit answer</button></article>)}</div></section>;
+function FindBounties({ bounties, answers, setPage, setAnswerForm }: { bounties: Bounty[]; answers: Answer[]; setPage: (page: Page) => void; setAnswerForm: React.Dispatch<React.SetStateAction<typeof initialAnswerForm>> }) {
+  return <section className="panel page-rise"><div className="section-head"><p className="eyebrow">Bounty board</p><h2>Find open bounties</h2><p>Browse research tasks created through the relay and backed by Arc escrow funding transactions.</p></div><div className="cards">{bounties.length === 0 ? <p className="empty">No bounties listed yet.</p> : bounties.map((bounty) => { const bountyAnswers = answers.filter((answer) => answer.bountyId === bounty.id); const latest = bountyAnswers[0]; return <article className="job-card" key={bounty.id}><div><span className="pill">{bounty.status}</span><span className="pill">On-chain #{bounty.onchainBountyId || "pending"}</span><span className="pill">{bountyAnswers.length} answer{bountyAnswers.length === 1 ? "" : "s"}</span></div><h3>{bounty.question}</h3><dl><div><dt>Reward</dt><dd>{bounty.reward}</dd></div><div><dt>Provider</dt><dd>{short(bounty.creator)}</dd></div><div><dt>Funding tx</dt><dd>{hashLink(bounty.fundingTxHash)}</dd></div><div><dt>Latest verdict</dt><dd>{latest?.verdict ? verdictLabel(latest.verdict) : "No answer yet"}</dd></div></dl><button className="primary" onClick={() => { setAnswerForm((form) => ({ ...form, bountyId: bounty.id, onchainBountyId: bounty.onchainBountyId || "" })); setPage("hunter"); }}>Submit answer</button></article>; })}</div></section>;
 }
 
 function Tutorial() {
-  return <section className="panel tutorial page-rise"><p className="eyebrow">Tutorial</p><h2>How SourceBounty works</h2><ol><li>Provider connects a provider wallet and writes the research question, reward, and deadline.</li><li>The app creates the Arc bounty and funds it from the provider wallet in two wallet transactions.</li><li>Hunter connects a separate wallet, picks a bounty, and submits an answer hash to Arc plus answer details to the relay.</li><li>Optional citation links are checked before submission. If GenLayer cannot access a link, the relay tells the user before review.</li><li>The current deployment supports funded bounty escrow plus verdict preview. On-chain release/refund requires the relay signer to record the GenLayer verdict.</li></ol></section>;
+  return <section className="panel tutorial page-rise"><p className="eyebrow">Tutorial</p><h2>How SourceBounty works</h2><ol><li>Provider connects a provider wallet and writes the research question, reward, and deadline.</li><li>The app creates the Arc bounty and funds it from the provider wallet in two wallet transactions.</li><li>Hunter connects a separate wallet, picks a bounty, and submits an answer hash to Arc plus answer details to the relay.</li><li>Optional citation links are checked before submission. If GenLayer cannot access a link, the relay tells the user before review.</li><li>The relay calls the GenLayer judge, records the verdict on Arc, and releases the reward automatically when the answer is accepted.</li></ol></section>;
 }
 
-function Status({ health, message, refresh }: { health: Health | null; message: string; refresh: () => void }) {
-  return <section className="panel status page-rise"><p className="eyebrow">Network status</p><h2>Live configuration</h2><p>Arc bounty contract: <code>{health?.arcEscrowContract || ARC_ESCROW_CONTRACT}</code></p><p>GenLayer judge: <code>{health?.genlayerJudgeContract || GENLAYER_JUDGE_CONTRACT}</code></p><p>Network: <code>{health?.genlayerNetwork || GENLAYER_NETWORK}</code></p><p>Relay API: <code>{API_URL}</code></p><p>{message}</p><button className="secondary" onClick={refresh}>Refresh status</button></section>;
+function Status({ health, message, refresh, bounties, answers }: { health: Health | null; message: string; refresh: () => void; bounties: Bounty[]; answers: Answer[] }) {
+  return <section className="panel status page-rise"><p className="eyebrow">Network status</p><h2>Live configuration</h2><p>Arc bounty contract: <code>{health?.arcEscrowContract || ARC_ESCROW_CONTRACT}</code></p><p>GenLayer judge: <code>{health?.genlayerJudgeContract || GENLAYER_JUDGE_CONTRACT}</code></p><p>Network: <code>{health?.genlayerNetwork || GENLAYER_NETWORK}</code></p><p>Relay API: <code>{API_URL}</code></p><p>{message}</p><button className="secondary" onClick={refresh}>Refresh status</button><div className="activity"><h3>Answer process</h3>{answers.length === 0 ? <p className="empty">No answers submitted yet.</p> : answers.map((answer) => <ProcessCard key={answer.id} answer={answer} bounty={bounties.find((bounty) => bounty.id === answer.bountyId)} />)}</div></section>;
+}
+
+function ProcessCard({ answer, bounty }: { answer: Answer; bounty?: Bounty }) {
+  const verdict = answer.verdict;
+  return <article className="process-card"><div><span className="pill">{verdictLabel(verdict)}</span><span className="pill">{answer.id}</span></div><h3>{bounty?.question || answer.bountyId}</h3><p>{answer.answer}</p><dl><div><dt>Responder</dt><dd>{short(answer.responder)}</dd></div><div><dt>On-chain bounty</dt><dd>#{bounty?.onchainBountyId || "unknown"}</dd></div><div><dt>Funding tx</dt><dd>{hashLink(bounty?.fundingTxHash)}</dd></div><div><dt>Answer tx</dt><dd>{hashLink(answer.answerTxHash)}</dd></div><div><dt>GenLayer tx</dt><dd>{hashLink(verdict?.genlayerTxHash)}</dd></div><div><dt>Record verdict tx</dt><dd>{hashLink(verdict?.recordTxHash)}</dd></div><div><dt>Reward tx</dt><dd>{hashLink(verdict?.rewardTxHash)}</dd></div><div><dt>Digest</dt><dd>{short(verdict?.verdictDigest || "")}</dd></div></dl><p>{verdict?.summary || "Waiting for relay update."}</p>{verdict?.reasonCodes?.length ? <p className="reasons">{verdict.reasonCodes.join(", ")}</p> : null}</article>;
+}
+
+function verdictLabel(verdict?: Verdict | null) {
+  if (!verdict) return "not submitted";
+  if (verdict.accepted === null) return "evaluating";
+  if (verdict.reasonCodes?.includes("SETTLEMENT_FAILED")) return "settlement failed";
+  return verdict.accepted ? "accepted" : "rejected";
+}
+
+function hashLink(value?: string) {
+  if (!value) return "pending";
+  const href = `https://explorer.testnet.arc.network/tx/${value}`;
+  return <a href={href} target="_blank" rel="noreferrer">{short(value)}</a>;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
